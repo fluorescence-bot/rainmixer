@@ -4,11 +4,11 @@ name: Build apps
 # macOS and Linux with PyInstaller and publishes them to the rolling "latest"
 # GitHub Release, downloadable by anyone at
 # https://github.com/<owner>/<repo>/releases/latest
-# Pull requests (and manual runs) only build and smoke-test, as workflow artifacts.
+# Manual runs only build and smoke-test, as workflow artifacts. Pull requests are
+# not built, to save Actions minutes and storage.
 on:
   push:
     branches: [ main ]
-  pull_request:
   workflow_dispatch:
 
 permissions:
@@ -138,6 +138,7 @@ jobs:
       with:
         name: RainMixer-${{ runner.os }}-${{ runner.arch }}
         path: code/src/kawaii_gui/release/*
+        retention-days: 1  # the release job publishes them; no need to keep copies
 
   release:
     needs: build
