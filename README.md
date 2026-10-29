@@ -14,6 +14,9 @@ pump, and a small robot rotates the cuvette (0–60°) for the measurement.
 
 Built for the course Digital Fabrication and Maker Space.
 
+**Before first use**, see the [setup guide](docs/setup-guide.md) for how to
+connect the pump and the robot arm.
+
 ## Download
 
 Ready-to-run apps, rebuilt automatically from `main` on every merge (no Python or
