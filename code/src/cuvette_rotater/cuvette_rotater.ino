@@ -18,8 +18,10 @@ const bool TOWARD_SWITCH = HIGH;               // DIR level that turns clockwise
 const float MIN_DEG = 0.0;
 const float MAX_DEG = 60.0;
 const float HOME_MAX_DEG = 370.0;              // Just over one full turn: always reaches the switch
-const long BACKOFF_STEPS = 139;               // 15.64 deg off the switch; this spot is 0 deg (found with calibrate.py)
+const long BACKOFF_STEPS = 123;               // 13.84 deg off the switch; this spot is 0 deg (found with calibrate.py)
+const long MAX_STEPS = 541;                    // Steps from 0 deg to 60 deg (found with calibrate.py)
 const long RELEASE_MAX_STEPS = 20 * MICROSTEPS; // Max steps to get off a pressed switch
+const unsigned long AUTO_HOME_MAX_MS = 10UL * 60 * 1000; // Auto-homing gives up after 10 minutes
 
 // State
 long currentStep = 0;
@@ -27,12 +29,32 @@ bool isHomed = false;
 char lineBuf[32];
 byte lineLen = 0;
 
+// Auto-homing: the Nano runs off USB, so it is usually on before the motor's 12 V, and it
+// can't see the 12 V. So after start-up (and after a HOME that failed) it keeps looking for
+// the switch on its own, one step per loop(): steps without 12 V do nothing, and once the
+// 12 V is on the motor turns onto the switch. It only ever steps toward the switch (the arm
+// can't get past it), except to get off it when it starts out pressed.
+enum AutoHome { AUTO_OFF, AUTO_TOWARD, AUTO_RELEASE };
+AutoHome autoHome = AUTO_OFF;
+long autoSteps = 0;          // Steps taken trying to get off the switch
+bool autoSawOpen = false;    // Switch seen open since the last release (a press only counts after that)
+unsigned long autoStartMs = 0;
+
 long degToSteps(float deg) {
   return lround(deg / 360.0 * STEPS_PER_REV);
 }
 
 float stepsToDeg(long steps) {
   return steps * 360.0 / STEPS_PER_REV;
+}
+
+// Working angles (0-60) are scaled so that MAX_DEG lands exactly on MAX_STEPS
+long angleToSteps(float deg) {
+  return lround(deg / MAX_DEG * MAX_STEPS);
+}
+
+float stepsToAngle(long steps) {
+  return steps * MAX_DEG / MAX_STEPS;
 }
 
 bool switchPressed() {
@@ -89,16 +111,63 @@ void homeMotor() {
     steps++;
   }
 
-  // Back off the switch; this becomes 0 deg
+  backOffAndSetZero();
+  Serial.println(F("<STATUS:READY>"));
+}
+
+// Back off the switch; this becomes 0 deg
+void backOffAndSetZero() {
   delay(200);
   setDirection(false);
   for (long i = 0; i < BACKOFF_STEPS; i++) {
     pulse(HOME_STEP_US);
   }
-
   currentStep = 0;
   isHomed = true;
-  Serial.println(F("<STATUS:READY>"));
+}
+
+void startAutoHome() {
+  autoHome = AUTO_TOWARD;
+  autoSteps = 0;
+  autoSawOpen = false;
+  autoStartMs = millis();
+}
+
+// One step of auto-homing. Replies <STATUS:AUTO_HOMED> when it finds the switch, or
+// <STATUS:AUTO_HOME_GAVE_UP> after AUTO_HOME_MAX_MS.
+void autoHomeStep() {
+  if (autoHome == AUTO_OFF) return;
+  if (millis() - autoStartMs > AUTO_HOME_MAX_MS) {
+    autoHome = AUTO_OFF;
+    Serial.println(F("<STATUS:AUTO_HOME_GAVE_UP>"));
+    return;
+  }
+  bool pressed = switchPressed();
+  if (autoHome == AUTO_RELEASE) {
+    if (!pressed) {
+      autoHome = AUTO_TOWARD;
+      autoSawOpen = true;
+      delay(200);
+      return;
+    }
+    // Without 12 V these steps do nothing; start over so it never gets far from the switch
+    if (autoSteps >= RELEASE_MAX_STEPS) autoSteps = 0;
+  } else if (pressed) {
+    if (autoSawOpen) {
+      autoHome = AUTO_OFF;
+      backOffAndSetZero();
+      Serial.println(F("<STATUS:AUTO_HOMED>"));
+    } else {
+      autoHome = AUTO_RELEASE;  // Resting on the switch: get off it, then come back
+      autoSteps = 0;
+    }
+    return;
+  } else {
+    autoSawOpen = true;
+  }
+  setDirection(autoHome == AUTO_TOWARD);
+  pulse(HOME_STEP_US);
+  autoSteps++;
 }
 
 // Replies with <STATUS:MOVING_TO_<deg>>, then <STATUS:MOVE_COMPLETE> or <ERROR:...>.
@@ -118,7 +187,7 @@ void moveToDegree(float targetDeg) {
     return;
   }
 
-  long targetStep = degToSteps(targetDeg);
+  long targetStep = angleToSteps(targetDeg);
   long stepsToMove = targetStep - currentStep;
   bool towardSwitch = stepsToMove < 0;
   setDirection(towardSwitch);
@@ -165,7 +234,7 @@ void jog(float deltaDeg) {
 void printStatus() {
   if (isHomed) {
     Serial.print(F("<STATUS:AT_"));
-    Serial.print(stepsToDeg(currentStep), 1);
+    Serial.print(stepsToAngle(currentStep), 1);
     Serial.println(F(">"));
   } else {
     Serial.println(F("<STATUS:NOT_HOMED>"));
@@ -189,7 +258,9 @@ void handleCommand(char *cmd) {
   for (char *p = cmd; *p; p++) *p = toupper(*p);
 
   if (strcmp(cmd, "HOME") == 0) {
+    autoHome = AUTO_OFF;
     homeMotor();
+    if (!isHomed) startAutoHome();  // Probably no 12 V yet: keep looking
   } else if (strcmp(cmd, "STATUS") == 0) {
     printStatus();
   } else if (strncmp(cmd, "JOG ", 4) == 0 && isNumber(cmd + 4)) {
@@ -210,10 +281,11 @@ void setup() {
   pinMode(limitSwitchPin, INPUT_PULLUP);
 
   // The Nano restarts whenever the serial port is opened, so this line is the
-  // first thing the GUI sees after connecting. It does not home on its own:
-  // the GUI sends HOME.
+  // first thing the GUI sees after connecting. The GUI sends HOME; until then
+  // (and when there is no GUI) it homes on its own once the 12 V is on.
   Serial.begin(115200);
   Serial.println(F("<STATUS:BOOTED>"));
+  startAutoHome();
 }
 
 void loop() {
@@ -234,4 +306,5 @@ void loop() {
       lineBuf[lineLen++] = c;
     }
   }
+  autoHomeStep();
 }
