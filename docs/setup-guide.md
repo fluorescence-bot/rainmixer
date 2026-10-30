@@ -18,6 +18,10 @@ before the 12 V power supply is plugged in.
 1. Unplug the 12 V power supply first.
 2. Then unplug the USB cable from the computer.
 
+**LEDs on the microchip**
+
+The Arduino Nano has small LEDs on its board. If their light causes problems,cover them with opaque nail polish, adding coats until no light shows through. If nail polish isn't an option, opaque tape works too.
+
 ## Pump
 
 Connect the pump to the computer with a USB-A to Mini-USB cable. Nothing else
